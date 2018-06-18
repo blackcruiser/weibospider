@@ -9,3 +9,4 @@ config/spider.yaml
 *.pyc
 .cache/
 */.cache/
+config/spider.yaml

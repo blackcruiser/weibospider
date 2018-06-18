@@ -7,6 +7,8 @@ from bs4 import BeautifulSoup
 from page_get import status
 from logger import parser
 from db.models import WeiboData
+from db.models import WeiboPraise
+from db.dao import PraiseOper
 from config import get_crawling_mode
 from decorators import parse_decorator
 
@@ -41,11 +43,28 @@ def get_weibo_infos_right(html):
 
 
 @parse_decorator(None)
-def get_weibo_info_detail(each, html):
+def get_weibo_forward_info_detail(mid, each, html):
     wb_data = WeiboData()
 
-    user_cont = each.find(attrs={'class': 'face'})
-    user_info = str(user_cont.find('a'))
+    if str(each).find('抱歉，此微博已被作者删除') != -1:
+        wb_data.weibo_id = mid
+        wb_data.is_delete = 1
+        return wb_data, 0
+
+    try:
+        each = each.find(attrs={'node-type': 'feed_list_forwardContent'})
+    except:
+        return;
+    try:
+        user_cont = each.find(attrs={'class': 'WB_info'})
+    except:
+        return;
+
+    try:
+        user_info = str(user_cont.find('a'))
+    except:
+        return;
+
     user_pattern = 'id=(\\d+)&amp'
     m = re.search(user_pattern, user_info)
     if m:
@@ -62,6 +81,120 @@ def get_weibo_info_detail(each, html):
         parser.warning("fail to get weibo's id,the page source {}".format(html))
         return None
 
+    try:
+        time_url = each.find(attrs={'node-type': 'feed_list_item_date'})
+    except:
+        pass
+
+    wb_data.create_time = time_url.get('title', '')
+    wb_data.weibo_url = time_url.get('href', '')
+    if ROOT_URL not in wb_data.weibo_url:
+        wb_data.weibo_url = '{}://{}{}'.format(PROTOCOL, ROOT_URL, wb_data.weibo_url)
+
+    def url_filter(url):
+        return ':'.join([PROTOCOL, url]) if PROTOCOL not in url and ORIGIN not in url else url
+
+    try:
+        full_imgs = each.find(attrs={'node-type': 'feed_list_media_prev'}).find(attrs={'node-type': 'fl_pic_list'})
+        if full_imgs.has_attr('action-data'):
+            url_param = full_imgs['action-data']
+            full_imgs_url = urllib.parse.parse_qs(url_param)['clear_picSrc'][0]
+            full_imgs_url_arr = full_imgs_url.split(',')
+            for i, url in enumerate(full_imgs_url_arr):
+                full_imgs_url_arr[i] = "https:" + url
+            wb_data.weibo_img = ';'.join(full_imgs_url_arr)
+    except Exception:
+        wb_data.weibo_img = ''
+
+
+    try:
+        imgs = str(each.find(attrs={'node-type': 'feed_list_media_prev'}).
+                   find_all('img'))
+        imgs_url = map(url_filter, re.findall(r"src=\"(.+?)\"", imgs))
+        wb_data.weibo_preview_img = ';'.join(imgs_url)
+    except Exception:
+        wb_data.weibo_preview_img = ''
+
+
+
+    try:
+        video = str(each.find(attrs={'node-type': 'feed_list_media_prev'}).
+                   find_all('video'))
+        video_url = map(url_filter, re.findall(r"src=\"(.+?)\"", video))
+        wb_data.weibo_video = ';'.join(video_url)
+    except Exception:
+        wb_data.weibo_video = ''
+
+    try:
+        li = str(each.find(attrs={'node-type': 'feed_list_media_prev'}).
+                 find_all('li'))
+        extracted_url = urllib.parse.unquote(re.findall(r"video_src=(.+?)&amp;", li)[0])
+        wb_data.weibo_video = url_filter(extracted_url)
+    except Exception:
+        wb_data.weibo_video = ''
+
+    try:
+        wb_data.weibo_cont = each.find(attrs={'node-type': 'feed_list_reason'}).text.strip()
+    except Exception:
+        wb_data.weibo_cont = ''
+
+    if '展开全文' in str(each):
+        is_all_cont = 0
+    else:
+        is_all_cont = 1
+
+    try:
+        wb_data.device = each.find(attrs={'class': 'WB_from S_txt2'}).find(attrs={'action-type': 'app_source'}).text
+    except Exception:
+        wb_data.device = ''
+
+    try:
+        wb_data.repost_num = int(each.find(attrs={'action-type': 'fl_forward'}).find_all('em')[1].text)
+    except Exception:
+        wb_data.repost_num = 0
+    try:
+        wb_data.comment_num = int(each.find(attrs={'action-type': 'fl_comment'}).find_all('em')[1].text)
+    except Exception:
+        wb_data.comment_num = 0
+    try:
+        wb_data.praise_num = int(each.find(attrs={'action-type': 'fl_like'}).find_all('em')[1].text)
+    except Exception:
+        wb_data.praise_num = 0
+
+    return wb_data, is_all_cont
+
+
+@parse_decorator(None)
+def get_weibo_info_detail(each, html):
+
+    wb_data = WeiboData()
+
+    user_cont = each.find(attrs={'class': 'face'})
+    user_info = str(user_cont.find('a'))
+    user_pattern = 'id=(\\d+)&amp'
+    m = re.search(user_pattern, user_info)
+    if m:
+        wb_data.uid = m.group(1)
+    else:
+        parser.warning("fail to get user'sid, the page source is{}".format(html))
+        return None
+
+
+    mid =each['mid']
+    weibo_pattern = 'mid=(\\d+)'
+    m = re.search(weibo_pattern, str(each))
+    if m:
+        wb_data.weibo_id = m.group(1)
+    else:
+        parser.warning("fail to get weibo's id,the page source {}".format(html))
+        return None
+
+
+    if each.has_attr('omid'):
+        omid = each['omid']
+        wb_data.is_origin = 0
+        wb_data.weibo_forward_id = omid
+
     time_url = each.find(attrs={'node-type': 'feed_list_item_date'})
     wb_data.create_time = time_url.get('title', '')
     wb_data.weibo_url = time_url.get('href', '')
@@ -72,12 +205,24 @@ def get_weibo_info_detail(each, html):
         return ':'.join([PROTOCOL, url]) if PROTOCOL not in url and ORIGIN not in url else url
 
     try:
+        full_imgs = each.find(attrs={'node-type': 'feed_list_media_prev'}).find(attrs={'node-type': 'fl_pic_list'})
+        if full_imgs.has_attr('action-data'):
+            url_param = full_imgs['action-data']
+            full_imgs_url = urllib.parse.parse_qs(url_param)['clear_picSrc'][0]
+            full_imgs_url_arr = full_imgs_url.split(',')
+            for i, url in enumerate(full_imgs_url_arr):
+                full_imgs_url_arr[i] = "https:" + url
+            wb_data.weibo_img = ';'.join(full_imgs_url_arr)
+    except Exception:
+        wb_data.weibo_img = ''
+
+    try:
         imgs = str(each.find(attrs={'node-type': 'feed_content'}).find(attrs={'node-type': 'feed_list_media_prev'}).
                    find_all('img'))
         imgs_url = map(url_filter, re.findall(r"src=\"(.+?)\"", imgs))
-        wb_data.weibo_img = ';'.join(imgs_url)
+        wb_data.weibo_preview_img = ';'.join(imgs_url)
     except Exception:
-        wb_data.weibo_img = ''
+        wb_data.weibo_preview_img = ''
 
     try:
         li = str(each.find(attrs={'node-type': 'feed_content'}).find(attrs={'node-type': 'feed_list_media_prev'}).
@@ -115,6 +260,16 @@ def get_weibo_info_detail(each, html):
         wb_data.praise_num = int(each.find(attrs={'action-type': 'fl_like'}).find_all('em')[1].text)
     except Exception:
         wb_data.praise_num = 0
+
+    praise = each.find(attrs={'suda-uatrack': "key=tblog_profile_v6&value=like_title"})
+    if praise:
+        praise_m = re.search("weibo.com/(\d+)/like", praise['href'])
+        if praise_m:
+            uid = praise_m.group(1)
+            wb_praise = WeiboPraise()
+            wb_praise.user_id = uid
+            wb_praise.weibo_id = wb_data.weibo_id
+            PraiseOper.add_one(wb_praise)
     return wb_data, is_all_cont
 
 
@@ -137,6 +292,16 @@ def get_weibo_list(html):
                 weibo_cont = status.get_cont_of_weibo(wb_data.weibo_id)
                 wb_data.weibo_cont = weibo_cont if weibo_cont else wb_data.weibo_cont
             weibo_datas.append(wb_data)
+
+            if wb_data.is_origin == 0:
+                fr = get_weibo_forward_info_detail(wb_data.weibo_forward_id, data, html)
+                if fr is not None:
+                    wb_fd_data = fr[0]
+                    if fr[1] == 0 and CRAWLING_MODE == 'accurate':
+                        weibo_fd_cont = status.get_cont_of_weibo(wb_fd_data.weibo_id)
+                        wb_fd_data.weibo_cont = weibo_fd_cont if weibo_fd_cont else wb_fd_data.weibo_cont
+                    weibo_datas.append(wb_fd_data)
+
     return weibo_datas
 
 

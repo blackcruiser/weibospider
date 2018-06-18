@@ -32,7 +32,7 @@ def is_banned(url):
     return False
 
 
-@timeout(200)
+@timeout(2000)
 @timeout_decorator
 def get_page(url, auth_level=2, is_ajax=False, need_proxy=False):
     """
